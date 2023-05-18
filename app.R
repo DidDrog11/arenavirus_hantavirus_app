@@ -4,7 +4,9 @@ library(tidyverse)
 library(here)
 library(DT)
 library(plotly)
-
+library(leaflet)
+library(leaflet.extras)
+library(sf)
 
 # Download necessary data -------------------------------------------------
 if(!file.exists(here("www", "clover_data.rds"))) {
@@ -36,7 +38,42 @@ if(!file.exists(here("www", "clover_data.rds"))) {
     
 }
 
-clover_data <- read_rds(here("www", "clover_data.rds"))
+clover_data <- read_rds(here("www", "clover_data.rds")) %>%
+    ungroup()
+
+
+# Load and process IUCN data ----------------------------------------------
+# Data has been downloaded from the IUCN redlist for all Rodentia, it is then filtered to those species in the clover_data subset
+# Names have been manually matched for the 16 that are different in the IUCN database
+if(!file.exists(here("www", "IUCN_data", "iucn_ranges.rds"))) {
+    unmatched_rodent_names <- tibble(clover_name = unique(clover_data %>%
+                                                              filter(!`Host species` %in% IUCN$SCI_NAME) %>%
+                                                              pull(`Host species`)),
+                                     IUCN_name = c("Necromys amoenus", NA, "Alexandromys fortis",
+                                                   "Microtus mystacinus", "Alexandromys maximowiczii",
+                                                   "Alexandromys oeconomus", "Clethrionomys gapperi",
+                                                   "Clethrionomys glareolus", "Craseomys regulus",
+                                                   "Craseomys rufocanus", "Clethrionomys rutilus",
+                                                   "Otomys unisulcatus", "Rattus tanezumi", "Neotamias amoenus",
+                                                   "Neotamias minimus", "Microtus subterraneus"))
+    included_rodents <- clover_data %>%
+        left_join(unmatched_rodent_names, by = c("Host species" = "clover_name")) %>%
+        mutate(IUCN_name = coalesce(IUCN_name, `Host species`)) %>%
+        distinct(`Host species`, IUCN_name)
+    
+    IUCN <- read_sf(here("www", "IUCN_data", "data_0.shp")) %>%
+        filter(SCI_NAME %in% included_rodents$IUCN_name) %>%
+        select(SCI_NAME, geometry)
+    
+    write_rds(IUCN, here("www", "IUCN_data", "iucn_ranges.rds"))
+    write_rds(included_rodents, here("www", "IUCN_data", "iucn_match.rds"))
+    
+} else {
+    
+    IUCN <- read_rds(here("www", "IUCN_data", "iucn_ranges.rds"))
+    included_rodents <- read_rds(here("www", "IUCN_data", "iucn_match.rds"))
+}
+
 
 # UI ----------------------------------------------------------------------
 
@@ -53,7 +90,9 @@ ui <- dashboardPage(
         sidebarMenu(
             menuItem("Homepage", tabName = "homepage", icon = icon("house")),
             menuItem("Known Arenaviridae/Hantaviridae of rodents", tabName = "known_pathogens", icon = icon("viruses")),
-            menuItem("Rodent hosts", tabName = "rodent_range", icon = icon("mouse"))
+            menuItem("Currently known rodent hosts", icon = icon("chart-simple"), startExpanded = TRUE,
+                     menuSubItem("Host-Pathogen associations", tabName = "known-h-p", icon = icon("chart-simple")),
+                     menuSubItem("Host ranges", tabName = "known-host-ranges", icon = icon("map-location-dot")))
         )
     ),
     
@@ -102,18 +141,39 @@ ui <- dashboardPage(
             
             ## Rodent ranges -----------------------------------------------------------
             
-            # Ranges of rodents known to be hosts of Arenaviridae and Hantaviridae
-            tabItem(tabName = "rodent_range",
+            # Plot of rodents known to be hosts of Arenaviridae and Hantaviridae
+            tabItem(tabName = "known-h-p",
                     fluidRow(
                         
                         box(width = 12,
-                            h1("Geographic ranges of known rodent hosts of Arenaviridae and Hantaviridae"),
-                            p("151 rodent species are identified are identified to be hosts of pathogens. Most rodent species are hosts of a single pathogen (70, 46%), with few species host to 5 or more pathogen species (10%)."),
+                            h1("Known rodent hosts of Arenaviridae and Hantaviridae - CLOVER"),
+                            p("Within the CLOVER database 151 rodent species are identified are identified to be hosts of pathogens. Most rodent species are hosts of a single pathogen (84, 56%), with few species host to 5 or more pathogen species (5%)."),
                         ),
                         
-                        box(width = 6,
+                        box(width = 12,
+                            height = 700,
+                            p("This is an interactive plot of known rodent hosts of Arenaviridae and Hantaviridae. The y-axis shows Host species genera, each bordered section of the bar corresponds to a single species within this genus. Hovering over the bordered section will display the species name and the names of the pathogens associated with that species. The x-axis counts the total number of pathogens within the genus, if multiple host species are hosts of the same pathogen these will be counted multiple times. Not all genera are listed on the y-axis at the default zoom. The plot can be zoomed in on by draggin within the plot area. Double click to resize the plot to its default."),
                             plotlyOutput("rodent_hosts"))
                         
+                    )),
+            # Ranges of rodents known to be hosts of Arenaviridae and Hantaviridae
+            tabItem(tabName = "known-host-ranges",
+                    fluidRow(
+                        
+                        box(width = 4,
+                            h1("Filter Host or Pathogen to explore the known range of the rodent host species"),
+                            uiOutput("pathogen"),
+                            uiOutput("genus"),
+                            uiOutput("species")),
+                        
+                        box(width = 8,
+                            h1("Select species to map their rodent range"),
+                            DTOutput("table_subset")),
+                        
+                        box(width = 12,
+                            h1("Map of rodent hosts' native range"),
+                            p("Rodent range maps have been obtained from the IUCN and NatureServe, the International Union for Conservation of Nature Red List of Threatened Species (2022), downloaded on 2023-05-18. These maps show the native distribution of the selected species in the above table. ", em("n.b. Cavia procellus"), " the Guinea pig does not have a wild distribution and ", em("Rattus flavipectus"), " is classified as a subspecies of ", em("Rattus tanezumi"), ".", strong("Importantly, the pathogens listed on the popups are unlikely to be distributed throughout the range of the rodent host.")),
+                            leafletOutput("species_map"))
                         
                     ))
             
@@ -179,26 +239,121 @@ server <- function(input, output) {
         
         plot_rodent <- clover_data %>%
             ungroup() %>%
-            select(`Host species`, `Host genus`, Pathogen) %>%
+            distinct(`Host species`, `Host genus`, Pathogen) %>%
             group_by(`Host species`) %>%
             mutate(`N pathogens` = n()) %>%
-            group_by(`Host genus`) %>%
-            mutate(species_number = match(`Host species`, unique(`Host species`))) %>%
             ungroup() %>%
-            mutate(`Host genus` = fct_rev(fct_infreq(`Host genus`)))
+            mutate(`Host genus` = fct_rev(fct_infreq(`Host genus`))) %>%
+            group_by(`Host species`) %>%
+            mutate(Pathogens = paste0(Pathogen, collapse = ", ")) %>%
+            ungroup() %>%
+            distinct(`Host species`, `Host genus`, `N pathogens`, Pathogens)
         
+        plot_rodent_list <- split(plot_rodent %>%
+                                      rename(host_species = `Host species`), seq_len(nrow(plot_rodent)))
         
-        plot_ly(plot_rodent,
-                x = ~`N pathogens`,
-                y = ~`Host genus`,
-                color = ~factor(species_number),
+        plot_ly(x = plot_rodent$`N pathogens`, 
+                y = plot_rodent$`Host genus`, 
                 stroke = I("black"),
                 colors = "YlOrRd",
-                type = "bar") %>%
-            layout(barmode = "stack")
+                customdata = plot_rodent_list, 
+                hovertemplate = "Host species: %{customdata.host_species}\nPathogen(s): %{customdata.Pathogens}<extra></extra>",
+                type = "bar",
+                height = 550) %>%
+            layout(barmode = "stack",
+                   xaxis = list(title = "Number of pathogens"),
+                   yaxis = list(title = "Host genus"))
         
     })
-
+    
+    df <- clover_data %>%
+        ungroup() %>%
+        distinct(`Host genus`, `Host species`, Pathogen)
+    
+    data <- df
+    
+    output$table <- renderDataTable({
+        if(is.null(data)){return()}
+        datatable(data, options = list(scrollX = T))
+    })
+    
+    output$pathogen <- renderUI({
+        selectInput(inputId = "Pathogen", "Select pathogen",choices = var_pathogen(), multiple = T)
+    })
+    output$genus <- renderUI({
+        selectInput(inputId = "Genus", "Select genus",choices = var_genus(), multiple = T)
+    })
+    output$species <- renderUI({
+        selectInput(inputId = "Species", "Select species",choices = var_species(), multiple = T)
+    })
+    
+    # Filtered data
+    data_filtered <- reactive({
+        filter(df,
+               Pathogen %in% pathogen(), `Host genus` %in% genus(), `Host species` %in% species())
+    })
+    
+    # Get filters from inputs
+    pathogen <- reactive({
+        if (is.null(input$Pathogen)) unique(clover_data$Pathogen) else input$Pathogen
+    })
+    
+    genus <- reactive({
+        if (is.null(input$Genus)) unique(clover_data$`Host genus`) else input$Genus
+    })
+    
+    species <- reactive({
+        if (is.null(input$Species)) unique(clover_data$`Host species`) else input$Species
+    })
+    
+    # Get available categories
+    var_pathogen <- reactive({
+        file1 <- data
+        if(is.null(data)){return()}
+        as.list(unique(file1$Pathogen))
+    })
+    
+    var_genus <- reactive({
+        filter(data, Pathogen %in% pathogen()) %>% 
+            pull(`Host genus`) %>% 
+            unique()
+    })
+    
+    var_species <- reactive({
+        filter(data, Pathogen %in% pathogen(), `Host genus` %in% genus()) %>% 
+            pull(`Host species`) %>% 
+            unique()
+    })
+    
+    output$table_subset <- renderDataTable({
+        datatable(data_filtered(), options = list(scrollX = T))
+    })
+    
+    output$species_map <- renderLeaflet({
+        
+        species = data_filtered()[input$table_subset_rows_selected, c("Host species")] %>%
+            pull(`Host species`)
+        
+        iucn_range <- IUCN %>%
+            filter(SCI_NAME %in% species) %>%
+            rename("Host species" = SCI_NAME)
+        
+        clover_data_map <- clover_data %>%
+            filter(`Host species` %in% species) %>%
+            group_by(`Host species`) %>%
+            mutate(Pathogens = paste0(Pathogen, collapse = ", ")) %>%
+            distinct(`Host species`, Pathogens)
+        
+        map_species <- left_join(iucn_range, clover_data_map, by = c("Host species"))
+        
+        leaflet(map_species) %>%
+            addPolygons(weight = 1,
+                        color = "black",
+                        fillColor = "darkred",
+                        popup = ~paste0("Rodent species: <em>", `Host species`, "</em><br>Pathogens: ", Pathogens)) %>%
+            addProviderTiles("CartoDB.Positron")
+        
+    })
 
     
 }
