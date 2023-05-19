@@ -7,8 +7,9 @@ library(plotly)
 library(leaflet)
 library(leaflet.extras)
 library(sf)
+library(cowplot)
 
-# Download necessary data -------------------------------------------------
+# Download CLOVER data -------------------------------------------------
 if(!file.exists(here("www", "clover_data.rds"))) {
     viruses <- read_csv(gzcon(url("https://github.com/viralemergence/clover/raw/main/clover/clover_1.0_allpathogens/CLOVER_1.0_Viruses_AssociationsFlatFile.csv")), show_col_types = FALSE)
     
@@ -40,6 +41,20 @@ if(!file.exists(here("www", "clover_data.rds"))) {
 
 clover_data <- read_rds(here("www", "clover_data.rds")) %>%
     ungroup()
+
+
+# Download review data ----------------------------------------------------
+if(!file.exists(here("www", "review_data.rds"))) {
+    review_data <- readRDS(gzcon(url("https://github.com/DidDrog11/arenavirus_hantavirus/raw/main/data/raw_data/2023-01-06_data.rds")))
+    
+    write_rds(review_data, here("www", "review_data.rds"))
+    
+} else {
+    
+    review_data <- read_rds(here("www", "review_data.rds"))
+    citations <- read_rds(here("www", "citations_2023-01-06.rds"))
+}
+
 
 
 # Load and process IUCN data ----------------------------------------------
@@ -92,12 +107,13 @@ ui <- dashboardPage(
             menuItem("Known Arenaviridae/Hantaviridae of rodents", tabName = "known_pathogens", icon = icon("viruses")),
             menuItem("Currently known rodent hosts", icon = icon("chart-simple"), startExpanded = TRUE,
                      menuSubItem("Host-Pathogen associations", tabName = "known-h-p", icon = icon("chart-simple")),
-                     menuSubItem("Host ranges", tabName = "known-host-ranges", icon = icon("map-location-dot")))
+                     menuSubItem("Host ranges", tabName = "known-host-ranges", icon = icon("map-location-dot"))),
+            menuItem("Included studies", tabName = "studies", icon = icon("book"))
         )
     ),
     
     
-    ## Homepage ----------------------------------------------------------------
+            ## Homepage ----------------------------------------------------------------
     
     dashboardBody(
         tabItems(
@@ -175,6 +191,25 @@ ui <- dashboardPage(
                             p("Rodent range maps have been obtained from the IUCN and NatureServe, the International Union for Conservation of Nature Red List of Threatened Species (2022), downloaded on 2023-05-18. These maps show the native distribution of the selected species in the above table. ", em("n.b. Cavia procellus"), " the Guinea pig does not have a wild distribution and ", em("Rattus flavipectus"), " is classified as a subspecies of ", em("Rattus tanezumi"), ".", strong("Importantly, the pathogens listed on the popups are unlikely to be distributed throughout the range of the rodent host.")),
                             leafletOutput("species_map"))
                         
+                    )),
+            
+
+            ## Included studies --------------------------------------------------------
+            tabItem(tabName = "studies",
+                    fluidRow(
+                        
+                        box(width = 12,
+                            h1("Included studies"),
+                            p("Following a systematic search of the available literature and review for suitability of inclusion, we have identified ", strong("X"), " studies for inclusion.", strong("The remainder of this application is developed based on data extracted from a pilot of data extraction from 9 studies."))),
+                        
+                        box(width = 12,
+                            h1("Details of included studies"),
+                            DTOutput("included_studies")),
+                        
+                        box(width = 12,
+                            h1("Timeline of included studies"),
+                            p("Effort to investigate the prevalence of Arenaviruses and Hantaviruses has changed over time, this can be seen thrpugh both the number of entries within NCBI PUBMED for the search terms `rodent*` AND (`arenavir*` OR `hantavir*`) and the publication dates of included studies."),
+                            plotOutput("included_studies_timeline"))
                     ))
             
         )
@@ -352,6 +387,54 @@ server <- function(input, output) {
                         fillColor = "darkred",
                         popup = ~paste0("Rodent species: <em>", `Host species`, "</em><br>Pathogens: ", Pathogens)) %>%
             addProviderTiles("CartoDB.Positron")
+        
+    })
+    
+
+# Included studies --------------------------------------------------------
+
+    output$included_studies <- renderDataTable({
+        
+        review_data$studies %>%
+            mutate(DOI = paste0("<a href=", DOI, ">", str_remove_all(DOI, "https://doi.org/"), "</a>"),
+                   linked_manuscripts = paste0("<a href=", linked_manuscripts, ">link</a>")) %>%
+            select("Study ID" = study_id, "PUBMED ID" = pubmed_id,
+                   "First author" = first_author_surname, "Year" = year,
+                   "Title" = title, "Journal" = journal, DOI, "Additional manuscripts" = linked_manuscripts) %>%
+            datatable(escape = FALSE, rownames = FALSE)
+        
+        
+    })
+    
+    output$included_studies_timeline <- renderPlot({
+        
+        search_results_plot <- citations %>%
+            group_by(year) %>%
+            mutate(year = as.numeric(year)) %>%
+            summarise(n = n()) %>%
+            ggplot() +
+            geom_col(aes(x = year, y = n, fill = year)) +
+            scale_fill_viridis_c("magma") +
+            labs(x = "Year",
+                 y = "Number of search results") +
+            guides(fill = "none") +
+            theme_bw()
+        
+        included_studies_plot <- review_data$studies %>%
+            group_by(year) %>%
+            summarise(n = n()) %>%
+            ggplot() +
+            geom_col(aes(x = year, y = n, fill = year)) +
+            scale_fill_viridis_c() +
+            labs(x = "Year",
+                 y = "Number of studies",
+                 title = "Timeline of included studies") +
+            guides(fill = "none") +
+            theme_bw()
+        
+        plot_grid(plotlist = list(search_results_plot,
+                                  included_studies_plot),
+                  nrow = 2)
         
     })
 
