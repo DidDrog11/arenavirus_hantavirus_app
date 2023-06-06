@@ -188,13 +188,13 @@ ui <- dashboardPage(
                         
                         box(width = 12,
                             h1("Map of rodent hosts' native range"),
-                            p("Rodent range maps have been obtained from the IUCN and NatureServe, the International Union for Conservation of Nature Red List of Threatened Species (2022), downloaded on 2023-05-18. These maps show the native distribution of the selected species in the above table. ", em("n.b. Cavia procellus"), " the Guinea pig does not have a wild distribution and ", em("Rattus flavipectus"), " is classified as a subspecies of ", em("Rattus tanezumi"), ".", strong("Importantly, the pathogens listed on the popups are unlikely to be distributed throughout the range of the rodent host.")),
+                            p("Rodent range maps have been obtained from the IUCN and NatureServe, the International Union for Conservation of Nature Red List of Threatened Species (2022), downloaded on 2023-05-18. These maps show the native distribution of the selected species in the above table. ", em("n.b. Cavia procellus"), " the Guinea pig does not have a wild distribution and ", em("Rattus flavipectus"), " is classified as a subspecies of ", em("Rattus tanezumi"), ".", strong("Importantly, the pathogens listed on the popups are unlikely to be distributed throughout the entire range of the rodent host.")),
                             leafletOutput("species_map"))
                         
                     )),
             
 
-            ## Included studies --------------------------------------------------------
+            ## Included studies ----
             tabItem(tabName = "studies",
                     fluidRow(
                         
@@ -208,8 +208,17 @@ ui <- dashboardPage(
                         
                         box(width = 12,
                             h1("Timeline of included studies"),
-                            p("Effort to investigate the prevalence of Arenaviruses and Hantaviruses has changed over time, this can be seen thrpugh both the number of entries within NCBI PUBMED for the search terms `rodent*` AND (`arenavir*` OR `hantavir*`) and the publication dates of included studies."),
+                            p("Effort to investigate the prevalence of Arenaviruses and Hantaviruses has changed over time, this can be seen through both the number of entries within NCBI PUBMED for the search terms `rodent*` AND (`arenavir*` OR `hantavir*`) and the publication dates of included studies."),
                             plotOutput("included_studies_timeline"))
+                    ))
+            
+            ## Sampled rodents ----
+            tabItem(tabName = "Sampled rodents",
+                    fluidRow(
+                        
+                        box(width = 12,
+                            h1("Sampled rodents"),
+                            p("Data has been extracted on the locations of rodent species that have been detected (typically through rodent trapping). The date during which sampling occurred is reported at the highest resolution obtainable from the study. The point relates to the position at which the rodent was detected, either the trap, trapping grid, study area or region. The locations are dependent on the level of detail given in the original study. Selecting a point will provide additional information including; whether the species was present or absent at that location, the number of individuals detected, the locality, the habitat type in which the trap was placed and coordinate resolution of the point."))
                     ))
             
         )
@@ -376,7 +385,7 @@ server <- function(input, output) {
         clover_data_map <- clover_data %>%
             filter(`Host species` %in% species) %>%
             group_by(`Host species`) %>%
-            mutate(Pathogens = paste0(Pathogen, collapse = ", ")) %>%
+            mutate(Pathogens = paste0(unique(Pathogen), collapse = ", ")) %>%
             distinct(`Host species`, Pathogens)
         
         map_species <- left_join(iucn_range, clover_data_map, by = c("Host species"))
