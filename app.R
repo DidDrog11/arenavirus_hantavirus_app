@@ -1,5 +1,6 @@
 library(shiny)
 library(shinydashboard)
+library(shinyjs)
 library(tidyverse)
 library(here)
 library(DT)
@@ -8,6 +9,8 @@ library(leaflet)
 library(leaflet.extras)
 library(sf)
 library(cowplot)
+library(bib2df)
+library(bibtex)
 
 # Download CLOVER data -------------------------------------------------
 if(!file.exists(here("www", "clover_data.rds"))) {
@@ -44,17 +47,29 @@ clover_data <- read_rds(here("www", "clover_data.rds")) %>%
 
 
 # Download review data ----------------------------------------------------
-if(!file.exists(here("www", "review_data.rds"))) {
-    review_data <- readRDS(gzcon(url("https://github.com/DidDrog11/arenavirus_hantavirus/raw/main/data/raw_data/2023-01-06_data.rds")))
+update_data = FALSE
+
+if(update_data) {
+    review_data <- readRDS(gzcon(url("https://github.com/DidDrog11/arenavirus_hantavirus/raw/main/data/clean_data/2024-03-21_data.rds")))
     
     write_rds(review_data, here("www", "review_data.rds"))
     
 } else {
     
     review_data <- read_rds(here("www", "review_data.rds"))
-    citations <- read_rds(here("www", "citations_2023-01-06.rds"))
 }
 
+# Format and rename citation columns --------------------------------------
+
+citations <- review_data$citations %>%
+    select(study_id, AUTHOR = Author, YEAR = `Publication Year`, TITLE = Title, JOURNAL = `Publication Title`, ISSN, ISSUE = Issue, VOLUME = Volume, DOI) %>%
+    mutate(AUTHOR = lapply(strsplit(AUTHOR, ";"), function(x) trimws(x)),
+           ISSUE = as.numeric(ISSUE),
+           VOLUME = as.numeric(VOLUME),
+           CATEGORY = case_when(!is.na(JOURNAL) ~ "Article",
+                                TRUE ~ NA)) %>%
+    rowwise() %>%
+    mutate(BIBTEXKEY = paste0(str_remove_all(str_split(AUTHOR[[1]][1], ",", simplify = TRUE)[, 1], " "), YEAR, "_", study_id))
 
 
 # Load and process IUCN data ----------------------------------------------
@@ -108,7 +123,10 @@ ui <- dashboardPage(
             menuItem("Currently known rodent hosts", icon = icon("chart-simple"), startExpanded = TRUE,
                      menuSubItem("Host-Pathogen associations", tabName = "known-h-p", icon = icon("chart-simple")),
                      menuSubItem("Host ranges", tabName = "known-host-ranges", icon = icon("map-location-dot"))),
-            menuItem("Included studies", tabName = "studies", icon = icon("book"))
+            menuItem("Included studies", tabName = "studies", icon = icon("book")),
+            menuItem("Rodent sampling locations", icon = icon("chart-simple"), startExpanded = TRUE,
+                     menuSubItem("Sampling locations", tabName = "sampling-locations", icon = icon("chart-simple")),
+                     menuSubItem("Sampling locations by rodent/pathogen species", tabName = "sampling-locations-stratified", icon = icon("map-location-dot")))
         )
     ),
     
@@ -125,6 +143,7 @@ ui <- dashboardPage(
                             h1("Introduction"),
                             p("Rodents are global hosts of zoonotic pathogens and potential hosts of novel pathogens of epidemic potential. Existing efforts to catalogue host-pathogen associations in these species are limited by global datasets which lack temporal and geographic specificity. Current research is hindered by spatial-, host taxa- and temporal biases within these datasets that are challenging to quantify. Here, we produce a database of studies on rodent-pathogen associations on a global scale focussed on two important viral families, ", strong("Arenaviridae"), " and ", strong("Hantaviridae"), "."),
                             p("Arenaviridae and Hantaviridae are two important, globally distributed, rodent-associated viral families in the order ", strong("Bunyavirales"), ". This order contains several known zoonoses. Arenaviridae associated zoonoses include ", em("Lassa mammarenavirus"), " the cause of Lassa fever in West Africa, ", em("Lymphocytic choriomeningitis virus"), " the cause of Lymphocytic choriomeningitis disease. Hantaviridae associated zoonoses include, ", em("Hantaan orthohantavirus"), " and ", em("Sin Nombre orthohantavirus"), " which cause Hantavirus haemorrhagic fever with renal syndrome and Hantavirus pulmonary syndrome respectively."),
+                            p(em("n.b. Throughout, where the term rodent is used I include all small mammals. This is incorrect and will be addressed as the project nears completion. The most common taxa that will be grouped in this way are shrews which are not rodents.")),
                             p("This data contained within this application has been extracted from a systematic review of the peer-reviewed scientific literature, pre-print articles, ecological reports and `grey` literature with data extracted for subsequent analysis. Data has been extracted on rodent sampling, including species sampled, sampling locations and sampling effort, which is matched to pathogen assays. Where possible these assays have been linked to pathogen sequences archived on NCBI GenBank and pathogenesis studies conducted on these viruses."),
                             p("These data are made available in several formats:"),
                             # Numbered bullet points for the data contained within the application from output$pageslist
@@ -200,7 +219,13 @@ ui <- dashboardPage(
                         
                         box(width = 12,
                             h1("Included studies"),
-                            p("Following a systematic search of the available literature and review for suitability of inclusion, we have identified ", strong("X"), " studies for inclusion.", strong("The remainder of this application is developed based on data extracted from a pilot of data extraction from 9 studies."))),
+                            p("Following a systematic search of the available literature and review for suitability of inclusion, we have identified ", strong(paste(nrow(review_data$citations %>% filter(!str_detect(decision, "Exclude"))))),
+                              " studies for review of full texts and data extraction."),
+                            p("As of 2024-01-30 data have been extracted from ", 
+                              strong(paste(nrow(review_data$studies %>% filter(!is.na(study_id))))),
+                              paste0("(", round(nrow(review_data$studies %>% filter(!is.na(study_id)))/nrow(review_data$citations %>% filter(str_detect(decision, "Include"))) * 100, 0), "%)"),
+                              " studies.",  "This equates to ", paste0(round(nrow(review_data$studies %>% filter(!is.na(study_id)))/nrow(review_data$citations %>% filter(str_detect(processed, "y"))) * 100, 0), "%"), "of studies selected for full-text review (that have been reviewed), having data that meets inclusion and exclusion criteria."),
+                            plotOutput("review_status")),
                         
                         box(width = 12,
                             h1("Details of included studies"),
@@ -210,21 +235,62 @@ ui <- dashboardPage(
                             h1("Timeline of included studies"),
                             p("Effort to investigate the prevalence of Arenaviruses and Hantaviruses has changed over time, this can be seen through both the number of entries within NCBI PUBMED for the search terms `rodent*` AND (`arenavir*` OR `hantavir*`) and the publication dates of included studies."),
                             plotOutput("included_studies_timeline"))
-                    ))
+                    )),
             
             ## Sampled rodents ----
-            tabItem(tabName = "Sampled rodents",
+            tabItem(tabName = "sampling-locations",
                     fluidRow(
                         
                         box(width = 12,
-                            h1("Sampled rodents"),
-                            p("Data has been extracted on the locations of rodent species that have been detected (typically through rodent trapping). The date during which sampling occurred is reported at the highest resolution obtainable from the study. The point relates to the position at which the rodent was detected, either the trap, trapping grid, study area or region. The locations are dependent on the level of detail given in the original study. Selecting a point will provide additional information including; whether the species was present or absent at that location, the number of individuals detected, the locality, the habitat type in which the trap was placed and coordinate resolution of the point."))
+                            h1("Sampling locations"),
+                            p("Data has been extracted on the locations of rodent species that have been detected (typically through rodent trapping). The date during which sampling occurred is reported at the highest resolution obtainable from the study. The point relates to the position at which the rodent was detected, either the trap, trapping grid, study area or region. The locations are dependent on the level of detail given in the original study. Selecting a point will provide additional information including; whether the species was present or absent at that location, the number of individuals detected, the locality, the habitat type in which the trap was placed and coordinate resolution of the point."),
+                            p("The map below shows the locations of sampling contained within this dataset. Selecting sampling points on the map will populate the table with the either the studies containing these sampling locations or the species and pathogens identified at these locations. Both datasets can then be downloaded, formatted as they are in the table."))),
+                    
+                    fluidRow(
+                        
+                        box(width = 12,
+                            h1("Mapping sampling"),
+                            p(""),
+                        leafletOutput("sampling_locations",
+                                      height = 600)))),
+            
+            tabItem(tabName = "sampling-locations-stratified",
+                    fluidRow(
+                        
+                        box(width = 12,
+                            h1("Sampled rodents stratified by pathogen or rodent species"),
+                            p("This map and the associated tables contain the same information as the previous page. Here, data may be filtered based on the rodent species or pathogen species with the filtered subset mapped.",
+                              HTML(paste("<ul>
+                                         <li>The dataset contains", nrow(review_data$host), "rodent records.</li>
+                                         <li>These include data on", length(unique(review_data$host$scientificName)), "rodent species.</li>
+                                         <li>There are data on", length(unique(review_data$pathogen$scientificName)), "pathogen species.</li>
+                                         <li>There are data on", nrow(review_data$pathogen %>%
+                                             filter(occurrenceRemarks >= 1) %>%
+                                             distinct(associatedTaxa, scientificName)), "host-pathogen associations (including negative associations).</li>
+                                         </ul>")))),
+                        
+                        box(width = 12,
+                            h1("Filter data on host or pathogen"),
+                            column(3, uiOutput("pathogen_family_rev")),
+                            column(3, uiOutput("pathogen_species_rev")),
+                            column(3, uiOutput("host_genus_rev")),
+                            column(3, uiOutput("host_species_rev")),
+                            collapsible = TRUE),
+                        
+                        box(width = 12,
+                            p("Hiding the side bar (three lines next to the title) may help fitting the table. The download button will download the selected data (filtered_data.csv) and associated citations (filtered_citations.bib).\n", 
+                              downloadButton("download_path_data", "Download Filtered Data and Citations")),
+                            DTOutput("review_table_subset"),
+                            collapsible = TRUE),
+                        
+                        box(width = 12,
+                            leafletOutput("pathogen_map", height = "600px"))
                     ))
             
         )
     )
-    
 )
+    
 
 # Server ------------------------------------------------------------------
 
@@ -306,7 +372,8 @@ server <- function(input, output) {
                 height = 550) %>%
             layout(barmode = "stack",
                    xaxis = list(title = "Number of pathogens"),
-                   yaxis = list(title = "Host genus"))
+                   yaxis = list(title = "Host genus")) %>% 
+            layout(yaxis = list(tickmode = "auto", nticks = length(unique(plot_rodent$`Host genus`))))
         
     })
     
@@ -325,10 +392,10 @@ server <- function(input, output) {
         selectInput(inputId = "Pathogen", "Select pathogen",choices = var_pathogen(), multiple = T)
     })
     output$genus <- renderUI({
-        selectInput(inputId = "Genus", "Select genus",choices = var_genus(), multiple = T)
+        selectInput(inputId = "Genus", "Select host genus",choices = var_genus(), multiple = T)
     })
     output$species <- renderUI({
-        selectInput(inputId = "Species", "Select species",choices = var_species(), multiple = T)
+        selectInput(inputId = "Species", "Select host species",choices = var_species(), multiple = T)
     })
     
     # Filtered data
@@ -402,14 +469,58 @@ server <- function(input, output) {
 
 # Included studies --------------------------------------------------------
 
+    output$review_status <- renderPlot({
+        
+        all_studies <- review_data$citations %>%
+            nrow()
+        
+        excluded_full_text <- review_data$citations %>%
+            filter(str_detect(decision, "Exclude")) %>%
+            nrow()
+        
+        extracted_full_text <- review_data$citations %>%
+            filter(str_detect(decision, "Include")) %>%
+            filter(str_detect(processed, "y")) %>%
+            nrow() 
+        
+        awaiting_review <- review_data$citations %>%
+            filter(!str_detect(decision, "Exclude")) %>%
+            filter(is.na(processed)) %>%
+            nrow()
+        
+        tibble(status = c("Extracted", "Awaiting review", "Excluded full text"),
+               n_studies = c(extracted_full_text, awaiting_review, excluded_full_text)) %>%
+            mutate(status = factor(status, levels = c( "Excluded full text", "Awaiting review", "Extracted")),
+                   percentage = round(n_studies / sum(n_studies) * 100, 0)) %>%
+            ggplot(aes(x = "", y = n_studies, fill = status)) +
+            geom_col(width = 0.7) +  # Use geom_col for a single bar
+            geom_text(aes(label = paste0(percentage, "%")), 
+                      position = position_stack(vjust = 0.5), 
+                      size = 8, color = "white") +
+            labs(title = "Data extraction progress",
+                 x = NULL,
+                 y = "Number of Studies",
+                 fill = element_blank()) +
+            theme_minimal() +
+            theme(axis.text.y = element_blank(),  # Hide x-axis labels
+                  legend.position = "top") +
+            coord_flip()
+        
+        })
+    
     output$included_studies <- renderDataTable({
         
+        
+        doi_links <- review_data$citations %>%
+            mutate(DOI = paste0("<a href='https://doi.org/", gsub("#", "%23", DOI), "'>", DOI, "</a>")) %>%
+            select(full_text_id, DOI, journal = `Publication Title`)
+        
         review_data$studies %>%
-            mutate(DOI = paste0("<a href=", DOI, ">", str_remove_all(DOI, "https://doi.org/"), "</a>"),
-                   linked_manuscripts = paste0("<a href=", linked_manuscripts, ">link</a>")) %>%
-            select("Study ID" = study_id, "PUBMED ID" = pubmed_id,
-                   "First author" = first_author_surname, "Year" = year,
-                   "Title" = title, "Journal" = journal, DOI, "Additional manuscripts" = linked_manuscripts) %>%
+            select(study_id, full_text_id, identifiedBy, datasetName, publication_year) %>%
+            left_join(doi_links, by = c("full_text_id")) %>%
+            select("Study ID" = study_id, 
+                   "First author" = identifiedBy, "Year" = publication_year,
+                   "Title" = datasetName, "Journal" = journal, DOI) %>%
             datatable(escape = FALSE, rownames = FALSE)
         
         
@@ -418,8 +529,8 @@ server <- function(input, output) {
     output$included_studies_timeline <- renderPlot({
         
         search_results_plot <- citations %>%
+            mutate(year = as.numeric(YEAR)) %>%
             group_by(year) %>%
-            mutate(year = as.numeric(year)) %>%
             summarise(n = n()) %>%
             ggplot() +
             geom_col(aes(x = year, y = n, fill = year)) +
@@ -430,23 +541,355 @@ server <- function(input, output) {
             theme_bw()
         
         included_studies_plot <- review_data$studies %>%
-            group_by(year) %>%
+            drop_na(study_id) %>%
+            drop_na(publication_year) %>%
+            group_by(publication_year) %>%
             summarise(n = n()) %>%
             ggplot() +
-            geom_col(aes(x = year, y = n, fill = year)) +
-            scale_fill_viridis_c() +
+            geom_col(aes(x = publication_year, y = n, fill = publication_year)) +
+            scale_fill_viridis_c("magma", limits = c(min(as.numeric(citations$YEAR), na.rm = TRUE),
+                                                     max(as.numeric(citations$YEAR), na.rm = TRUE))) +
             labs(x = "Year",
-                 y = "Number of studies",
-                 title = "Timeline of included studies") +
+                 y = "Number of included studies") +
             guides(fill = "none") +
-            theme_bw()
+            theme_bw() +
+            coord_cartesian(xlim = c(min(as.numeric(citations$YEAR), na.rm = TRUE),
+                                     max(as.numeric(citations$YEAR), na.rm = TRUE)))
         
         plot_grid(plotlist = list(search_results_plot,
                                   included_studies_plot),
                   nrow = 2)
         
     })
+    
 
+# Rodent locations --------------------------------------------------------
+
+    output$sampling_locations <- renderLeaflet({
+        
+        locations <- review_data$host %>%
+            group_by(study_id, eventDate, locality, country, verbatimLocality, coordinate_resolution, 
+                     decimalLatitude, decimalLongitude) %>%
+            summarise(p_species = sum(as.numeric(individualCount) >= 1, na.rm = TRUE),
+                      a_species = sum(as.numeric(individualCount) == 0), na.rm = TRUE) %>%
+            mutate(low_resolution = case_when(is.na(locality) ~ TRUE,
+                                              coordinate_resolution == "country" ~ TRUE,
+                                              coordinate_resolution == "state" ~ TRUE,
+                                              coordinate_resolution == "district" ~ TRUE,
+                                              coordinate_resolution == "county" ~ TRUE,
+                                              TRUE ~ FALSE)) %>%
+            drop_na(decimalLatitude) %>%
+            drop_na(decimalLongitude) %>%
+            left_join(review_data$studies %>%
+                          select(study_id, full_text_id, identifiedBy, datasetName), by = c("study_id")) %>%
+            left_join(review_data$citations %>%
+                          select(full_text_id, `Publication Year`, DOI), by = "full_text_id") %>%
+            st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = "EPSG:4326")
+        
+        res_color_palette <- c("darkred", "darkgreen")
+        res_color_factor <- colorFactor(palette = res_color_palette, domain = locations$low_resolution)
+        
+        
+        leaflet(locations) %>%
+            addTiles() %>%
+            addCircleMarkers(color = ~res_color_factor(low_resolution),
+                             stroke = FALSE,
+                             fillOpacity = 0.8,
+                             clusterOptions = NULL,
+                             radius = 3,
+                             popup = ~paste0(
+                                 "• Number of rodent species detected: ", p_species, "<br/>",
+                                 "• Number of rodent species not detected: ", a_species, "<br/>",
+                                 "• Study ID: ", study_id, "<br/>",
+                                 "• ", locality, ", ", country, "<br/>",
+                                 "• Coordinate resolution: ", str_to_sentence(coordinate_resolution), "<br/>",
+                                 "• ", identifiedBy, ", et al. ", `Publication Year`, ". ", datasetName, "<br/>",
+                                 "• DOI: ", DOI)
+                             ) %>%
+            addLegend(title = "Low Coordinate Resolution",
+                      colors = res_color_palette,
+                      values = unique(locations$low_resolution),
+                      labels = c("FALSE", "TRUE"),
+                      opacity = 1
+                      )
+        
+    })
+
+
+    # Stratified records ------------------------------------------------------
+
+    data_rev <- reactiveVal(review_data$pathogen)
+    
+    output$pathogen_family_rev <- renderUI({
+        selectizeInput(
+            inputId = "pathogen_family_rev",
+            label = "Select pathogen family",
+            choices = var_pathogen_family_rev(),
+            multiple = TRUE,
+            selected = c("Hantaviridae", "Mammarenaviridae"),
+            options = list(
+                server = TRUE,
+                placeholder = 'Select pathogen family'
+            )
+        )
+    })
+    output$pathogen_species_rev <- renderUI({
+        selectizeInput(
+            inputId = "pathogen_species_rev",
+            "Select pathogen species",
+            choices = var_pathogen_species_rev(),
+            multiple = TRUE,
+            options = list(
+                server = TRUE,
+                placeholder = 'Select pathogen species'
+            ))
+    })
+    output$host_genus_rev <- renderUI({
+        selectizeInput(
+            inputId = "host_genus_rev",
+            "Select host genus",
+            choices = var_host_genus_rev(),
+            multiple = TRUE,
+            options = list(
+                server = TRUE,
+                placeholder = 'Select host genus'
+            ))
+    })
+    output$host_species_rev <- renderUI({
+        selectizeInput(
+            inputId = "host_species_rev",
+            "Select host species",
+            choices = var_host_species_rev(),
+            multiple = TRUE,
+            options = list(
+                server = TRUE,
+                placeholder = 'Select host species'
+            ))
+    })
+    
+    # Get available categories
+    var_pathogen_family_rev <- reactive({
+        sort(unique(review_data$pathogen$family))
+    })
+    
+    var_pathogen_species_rev <- reactive({
+        
+        if (!is.null(input$pathogen_family_rev)) {
+            sort(data_rev() %>%
+                filter(family %in% input$pathogen_family_rev) %>%
+                distinct(scientificName) %>%
+                pull())
+        } else {
+            sort(data_rev() %>%
+                distinct(scientificName) %>%
+                pull())
+        }
+
+    })
+    
+    var_host_genus_rev <- reactive({
+        sort(unique(review_data$pathogen$host_genus))
+    })
+    
+    var_host_species_rev <- reactive({
+        
+        if (!is.null(input$host_genus_rev)) {
+            sort(data_rev() %>%
+                filter(host_genus %in% input$host_genus_rev) %>%
+                distinct(associatedTaxa) %>%
+                pull())
+        } else {
+            sort(data_rev() %>%
+                distinct(associatedTaxa) %>%
+                pull())
+        }
+        
+    })
+    
+    # Filtered data
+    data_filtered_rev <- reactive({
+        filtered_data <- data_rev()
+        
+        # Filter based on pathogen family
+        if (!is.null(input$pathogen_family_rev) & is.null(input$pathogen_species_rev)) {
+            filtered_data <- filter(filtered_data, family %in% input$pathogen_family_rev)
+        }
+        
+        # Filter based on pathogen species
+        if (!is.null(input$pathogen_species_rev)) {
+            filtered_data <- filter(filtered_data, scientificName %in% input$pathogen_species_rev)
+        }
+        
+        # Filter based on host genus
+        if (!is.null(input$host_genus_rev) & is.null(input$host_species_rev)) {
+            filtered_data <- filter(filtered_data, host_genus %in% input$host_genus_rev)
+        }
+        
+        # Filter based on host species
+        if (!is.null(input$host_species_rev)) {
+            filtered_data <- filter(filtered_data, associatedTaxa %in% input$host_species_rev)
+        }
+        
+        return(filtered_data)
+    })
+    
+    output$review_table_subset <- renderDataTable({
+        datatable(data_filtered_rev(), options = list(scrollX = TRUE, autoWidth = TRUE),
+                  colnames = c("Path ID", "Rodent ID", "Study ID", "Host genus", "Host species", "Locality", "Country", "Coord Resolution",
+                               "Lat", "Long", "Pathogen rank", "Path family", "Path species", "Assay", "Tested", "Negative", "Positive",
+                               "Inconclusive", "Note"),
+                  class = 'custom-datatable',
+                  rownames = FALSE)
+    })
+    
+    # Function to filter citations based on selected study IDs
+    filterCitations <- function(selected_study_ids) {
+        citations %>%
+            filter(study_id %in% selected_study_ids)
+    }
+    
+    # Function to create BibTeX file from filtered citations
+    createBibTeXFile <- function(filtered_citations, file_path) {
+        if (nrow(filtered_citations) > 0) {
+            # Print the filtered_citations for debugging
+            print(filtered_citations)
+            
+            # Convert to BibTeX format
+            bib_data <- df2bib(filtered_citations)
+            
+            # Create BibTeX entries
+            bib_entries <- apply(filtered_citations, 1, function(row) {
+                entry <- paste0("@Article{", row$BIBTEXKEY, ",\n",
+                                "  study_id = {", row$study_id, "},\n",
+                                "  Author = {", paste(row$AUTHOR, collapse = "; "), "},\n",
+                                "  Year = {", row$YEAR, "},\n",
+                                "  Title = {", row$TITLE, "},\n",
+                                "  Journal = {", row$JOURNAL, "},\n",
+                                "  Issn = {", row$ISSN, "},\n",
+                                "  Issue = {", row$ISSUE, "},\n",
+                                "  Volume = {", row$VOLUME, "},\n",
+                                "  Doi = {", row$DOI, "}\n",
+                                "}\n")
+                return(entry)
+            })
+            
+            # Write BibTeX entries to the file
+            writeLines(bib_entries, con = file_path)
+        }
+    }
+    
+    output$download_path_data <- downloadHandler(
+        filename = function() {
+            paste("filtered_data_and_citations_", Sys.Date(), ".zip", sep = "")
+        },
+        content = function(file) {
+            # Create a temporary directory to store files
+            temp_dir <- tempdir()
+            
+            # Filtered table
+            write.csv(data_filtered_rev(), file.path(temp_dir, "filtered_data.csv"))
+            
+            # Filtered citations
+            selected_study_ids <- unique(data_filtered_rev()$study_id)
+            filtered_citations <- filterCitations(selected_study_ids)
+            bib_path <- file.path(temp_dir, "filtered_citations.bib")
+            createBibTeXFile(filtered_citations, bib_path)
+            
+            # Create a zip file with both CSV and BibTeX files
+            zip(file, files = c(file.path(temp_dir, "filtered_data.csv"), bib_path), flags = "-j")
+        }
+    )
+
+# Plot pathogen records ---------------------------------------------------
+
+    # Initialize an empty map
+    output$pathogen_map <- renderLeaflet({
+        leaflet() %>%
+            addTiles()
+    })
+    
+    colour_palette <- colorRampPalette(c("darkgreen", "darkred"))(100)
+    
+    # ReactiveVal to track filter status
+    filter_applied <- reactiveVal(FALSE)
+    
+    # Update the map based on filtered data
+    observe({
+        filtered_data <- data_filtered_rev()
+        
+        # Check if there are filters applied
+        if ((!is.null(input$pathogen_family_rev) && length(input$pathogen_family_rev) > 0) ||
+            (!is.null(input$pathogen_species_rev) && length(input$pathogen_species_rev) > 0) ||
+            (!is.null(input$host_genus_rev) && length(input$host_genus_rev) > 0) ||
+            (!is.null(input$host_species_rev) && length(input$host_species_rev) > 0)) {
+            
+            # Filter the data based on selected filters
+            filtered_data <- filtered_data %>%
+                filter(
+                    if (!is.null(input$pathogen_family_rev)) family %in% input$pathogen_family_rev else TRUE,
+                    if (!is.null(input$pathogen_species_rev)) scientificName %in% input$pathogen_species_rev else TRUE,
+                    if (!is.null(input$host_genus_rev)) host_genus %in% input$host_genus_rev else TRUE,
+                    if (!is.null(input$host_species_rev)) associatedTaxa %in% input$host_species_rev else TRUE
+                )
+            
+            # Check if any records are left after filtering
+            if (nrow(filtered_data) > 0) {
+                # Map organismQuantity to colour
+                colour_index <- cut(filtered_data$organismQuantity, breaks = 100)
+                colours <- colour_palette[colour_index]
+                
+                # Clear existing markers and add new ones
+                leafletProxy("pathogen_map") %>%
+                    clearMarkers() %>%
+                    addCircleMarkers(data = filtered_data,
+                                     lng = ~decimalLongitude,
+                                     lat = ~decimalLatitude,
+                                     radius = 8,
+                                     color = colours,
+                                     fillOpacity = 0.7,
+                                     popup = ~paste("Study ID: ", study_id, "<br>",
+                                                    "Rodent ID: ", associated_rodent_record_id, "<br>",
+                                                    "Rodent: ", associatedTaxa, "<br>",
+                                                    "N rodents tested: ", occurrenceRemarks, "<br>",
+                                                    "Pathogen ID: ", pathogen_record_id, "<br>",
+                                                    "Pathogen: ", scientificName, "<br>",
+                                                    "N pathogen detected: ", organismQuantity),
+                                     clusterOptions = markerClusterOptions()) %>%
+                    fitBounds(
+                        lat1 = min(filtered_data$decimalLatitude, na.rm = TRUE),
+                        lng1 = min(filtered_data$decimalLongitude, na.rm = TRUE),
+                        lat2 = max(filtered_data$decimalLatitude, na.rm = TRUE),
+                        lng2 = max(filtered_data$decimalLongitude, na.rm = TRUE)
+                    )
+                
+                # Update filter status
+                filter_applied(TRUE)
+            } else {
+                # If no records match the filters, clear markers
+                leafletProxy("pathogen_map") %>%
+                    clearMarkers()
+                
+                # Update filter status
+                filter_applied(FALSE)
+            }
+        } else {
+            # If no filters applied, clear markers
+            leafletProxy("pathogen_map") %>%
+                clearMarkers()
+            
+            # Update filter status
+            filter_applied(FALSE)
+        }
+    })
+
+    
+    # Clear markers when filter is removed
+    observe({
+        if (!filter_applied()) {
+            leafletProxy("pathogen_map") %>%
+                clearMarkers()
+        }
+    })
     
 }
 

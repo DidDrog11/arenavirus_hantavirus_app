@@ -139,6 +139,31 @@
       ],
       "Hash": "543776ae6848fde2f48ff3816d0628bc"
     },
+    "bib2df": {
+      "Package": "bib2df",
+      "Version": "1.1.1",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "dplyr",
+        "httr",
+        "humaniformat",
+        "stringr"
+      ],
+      "Hash": "f2cf33875b859a757ad919a4471cdc0f"
+    },
+    "bibtex": {
+      "Package": "bibtex",
+      "Version": "0.5.1",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "backports",
+        "utils"
+      ],
+      "Hash": "a704d52e87822191b42c715c568f96dd"
+    },
     "bit": {
       "Package": "bit",
       "Version": "4.0.5",
@@ -858,6 +883,17 @@
         "openssl"
       ],
       "Hash": "7e5e3cbd2a7bc07880c94e22348fb661"
+    },
+    "humaniformat": {
+      "Package": "humaniformat",
+      "Version": "0.6.0",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "Rcpp",
+        "methods"
+      ],
+      "Hash": "d521cf9db39ca79250a00029661fb7cd"
     },
     "ids": {
       "Package": "ids",
@@ -1660,6 +1696,19 @@
         "utils"
       ],
       "Hash": "e418b532e9bb4eb22a714b9a9f1acee7"
+    },
+    "shinyjs": {
+      "Package": "shinyjs",
+      "Version": "2.1.0",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "digest",
+        "jsonlite",
+        "shiny"
+      ],
+      "Hash": "802e4786b353a4bb27116957558548d5"
     },
     "sourcetools": {
       "Package": "sourcetools",
