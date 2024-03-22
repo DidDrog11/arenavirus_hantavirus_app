@@ -50,7 +50,7 @@ clover_data <- read_rds(here("www", "clover_data.rds")) %>%
 update_data = FALSE
 
 if(update_data) {
-    review_data <- readRDS(gzcon(url("https://github.com/DidDrog11/arenavirus_hantavirus/raw/main/data/clean_data/2024-03-21_data.rds")))
+    review_data <- readRDS(gzcon(url("https://github.com/DidDrog11/arenavirus_hantavirus/raw/main/data/clean_data/2024-03-22_data.rds")))
     
     write_rds(review_data, here("www", "review_data.rds"))
     
@@ -62,6 +62,7 @@ if(update_data) {
 # Format and rename citation columns --------------------------------------
 
 citations <- review_data$citations %>%
+    drop_na(study_id) %>%
     select(study_id, AUTHOR = Author, YEAR = `Publication Year`, TITLE = Title, JOURNAL = `Publication Title`, ISSN, ISSUE = Issue, VOLUME = Volume, DOI) %>%
     mutate(AUTHOR = lapply(strsplit(AUTHOR, ";"), function(x) trimws(x)),
            ISSUE = as.numeric(ISSUE),
@@ -126,7 +127,8 @@ ui <- dashboardPage(
             menuItem("Included studies", tabName = "studies", icon = icon("book")),
             menuItem("Rodent sampling locations", icon = icon("chart-simple"), startExpanded = TRUE,
                      menuSubItem("Sampling locations", tabName = "sampling-locations", icon = icon("chart-simple")),
-                     menuSubItem("Sampling locations by rodent/pathogen species", tabName = "sampling-locations-stratified", icon = icon("map-location-dot")))
+                     menuSubItem("Sampling locations by rodent/pathogen species", tabName = "sampling-locations-stratified", icon = icon("map-location-dot")),
+                     menuSubItem("Sequencing locations by rodent/pathogen species", tabName = "sequence-locations", icon = icon("dna")))
         )
     ),
     
@@ -284,7 +286,32 @@ ui <- dashboardPage(
                             collapsible = TRUE),
                         
                         box(width = 12,
-                            leafletOutput("pathogen_map", height = "600px"))
+                            leafletOutput("pathogen_map", height = 600))
+                    )),
+            tabItem(tabName = "sequence-locations",
+                    fluidRow(
+                        
+                        box(width = 12,
+                            h1("Sequences deposited in NCBI GenBank"),
+                            p("This map and the associated tables contain information on sequences available in NCBI GenBank. Metadata is often incomplete to accompany the sequences. Our current data synthesis approach enriches sequence metadata by linking obtained sequences back to sampled rodents. This improves the geographic resolution of sampling locations and dates sampled which may be helpful for interpreting analyses using these sequences.")),
+                        
+                        box(width = 12,
+                            h1("Filter data on host or pathogen"),
+                            column(3, uiOutput("seq_pathogen_family_rev")),
+                            column(3, uiOutput("seq_pathogen_species_rev")),
+                            column(3, uiOutput("seq_host_genus_rev")),
+                            column(3, uiOutput("seq_host_species_rev")),
+                            collapsible = TRUE),
+                        
+                        box(width = 12,
+                            p("Hiding the side bar (three lines next to the title) may help fitting the table. The download button will download the selected data (filtered_data.csv) and associated citations (filtered_citations.bib).\n", 
+                              downloadButton("download_seq_data", "Download Filtered Sequence Data and Citations")),
+                            DTOutput("seq_review_table_subset"),
+                            collapsible = TRUE),
+                        
+                        box(width = 12,
+                           leafletOutput("sequence_map", height = 600))
+                        
                     ))
             
         )
@@ -808,14 +835,15 @@ server <- function(input, output) {
             addTiles()
     })
     
-    colour_palette <- colorRampPalette(c("darkgreen", "darkred"))(100)
+    colour_palette <- c("darkgreen", "darkred")
     
     # ReactiveVal to track filter status
     filter_applied <- reactiveVal(FALSE)
     
     # Update the map based on filtered data
     observe({
-        filtered_data <- data_filtered_rev()
+        filtered_data <- data_filtered_rev() %>%
+            filter(occurrenceRemarks >= 1)
         
         # Check if there are filters applied
         if ((!is.null(input$pathogen_family_rev) && length(input$pathogen_family_rev) > 0) ||
@@ -835,8 +863,7 @@ server <- function(input, output) {
             # Check if any records are left after filtering
             if (nrow(filtered_data) > 0) {
                 # Map organismQuantity to colour
-                colour_index <- cut(filtered_data$organismQuantity, breaks = 100)
-                colours <- colour_palette[colour_index]
+                colours <- ifelse(filtered_data$organismQuantity >= 1, "darkred", "darkgreen")
                 
                 # Clear existing markers and add new ones
                 leafletProxy("pathogen_map") %>%
@@ -854,7 +881,9 @@ server <- function(input, output) {
                                                     "Pathogen ID: ", pathogen_record_id, "<br>",
                                                     "Pathogen: ", scientificName, "<br>",
                                                     "N pathogen detected: ", organismQuantity),
-                                     clusterOptions = markerClusterOptions()) %>%
+                                     clusterOptions = markerClusterOptions(
+                                         spiderfyDistanceMultiplier = 2
+                                     )) %>%
                     fitBounds(
                         lat1 = min(filtered_data$decimalLatitude, na.rm = TRUE),
                         lng1 = min(filtered_data$decimalLongitude, na.rm = TRUE),
@@ -887,6 +916,255 @@ server <- function(input, output) {
     observe({
         if (!filter_applied()) {
             leafletProxy("pathogen_map") %>%
+                clearMarkers()
+        }
+    })
+    
+
+
+# Stratify sequence records -----------------------------------------------
+
+    seq_data_rev <- reactiveVal(review_data$sequence_data %>%
+                                    mutate(accession_number = sprintf('<a href="https://www.ncbi.nlm.nih.gov/search/all/?term=%s" target="_blank">%s</a>',
+                                                                      accession_number,
+                                                                      accession_number)))
+    
+    output$seq_pathogen_family_rev <- renderUI({
+        selectizeInput(
+            inputId = "seq_pathogen_family_rev",
+            label = "Select pathogen family",
+            choices = seq_var_pathogen_family_rev(),
+            multiple = TRUE,
+            selected = c("Hantaviridae", "Arenaviridae", ""),
+            options = list(
+                server = TRUE,
+                placeholder = 'Select pathogen family'
+            )
+        )
+    })
+    output$seq_pathogen_species_rev <- renderUI({
+        selectizeInput(
+            inputId = "seq_pathogen_species_rev",
+            "Select pathogen species",
+            choices = seq_var_pathogen_species_rev(),
+            multiple = TRUE,
+            options = list(
+                server = TRUE,
+                placeholder = 'Select pathogen species'
+            ))
+    })
+    output$seq_host_genus_rev <- renderUI({
+        selectizeInput(
+            inputId = "seq_host_genus_rev",
+            "Select host genus",
+            choices = seq_var_host_genus_rev(),
+            multiple = TRUE,
+            options = list(
+                server = TRUE,
+                placeholder = 'Select host genus'
+            ))
+    })
+    output$seq_host_species_rev <- renderUI({
+        selectizeInput(
+            inputId = "seq_host_species_rev",
+            "Select host species",
+            choices = seq_var_host_species_rev(),
+            multiple = TRUE,
+            options = list(
+                server = TRUE,
+                placeholder = 'Select host species'
+            ))
+    })
+    
+    # Get available categories
+    seq_var_pathogen_family_rev <- reactive({
+        sort(unique(review_data$sequence_data$family))
+    })
+    
+    seq_var_pathogen_species_rev <- reactive({
+        
+        if (!is.null(input$seq_pathogen_family_rev)) {
+            sort(seq_data_rev() %>%
+                     filter(family %in% input$seq_pathogen_family_rev) %>%
+                     distinct(virus_clean) %>%
+                     pull())
+        } else {
+            sort(seq_data_rev() %>%
+                     distinct(virus_clean) %>%
+                     pull())
+        }
+        
+    })
+    
+    seq_var_host_genus_rev <- reactive({
+        sort(unique(review_data$sequence_data$host_genus))
+    })
+    
+    seq_var_host_species_rev <- reactive({
+        
+        if (!is.null(input$host_genus_rev)) {
+            sort(seq_data_rev() %>%
+                     filter(host_genus %in% input$seq_host_genus_rev) %>%
+                     distinct(associatedTaxa) %>%
+                     pull())
+        } else {
+            sort(seq_data_rev() %>%
+                     distinct(associatedTaxa) %>%
+                     pull())
+        }
+        
+    })
+    
+    # Filtered data
+    seq_data_filtered_rev <- reactive({
+        seq_filtered_data <- seq_data_rev()
+        
+        # Filter based on pathogen family
+        if (!is.null(input$seq_pathogen_family_rev) & is.null(input$seq_pathogen_species_rev)) {
+            seq_filtered_data <- filter(seq_filtered_data, family %in% input$seq_pathogen_family_rev)
+        }
+        
+        # Filter based on pathogen species
+        if (!is.null(input$seq_pathogen_species_rev)) {
+            seq_filtered_data <- filter(seq_filtered_data, virus_clean %in% input$seq_pathogen_species_rev)
+        }
+        
+        # Filter based on host genus
+        if (!is.null(input$seq_host_genus_rev) & is.null(input$seq_host_species_rev)) {
+            seq_filtered_data <- filter(seq_filtered_data, host_genus %in% input$seq_host_genus_rev)
+        }
+        
+        # Filter based on host species
+        if (!is.null(input$seq_host_species_rev)) {
+            seq_filtered_data <- filter(seq_filtered_data, associatedTaxa %in% input$seq_host_species_rev)
+        }
+        
+        return(seq_filtered_data)
+    })
+    
+    output$seq_review_table_subset <- renderDataTable({
+        datatable(seq_data_filtered_rev(), options = list(scrollX = TRUE, autoWidth = TRUE),
+                  colnames = c("Sequence ID", "Rodent ID", "Path ID", "Sampling date", "Study ID", "Host genus", "Host species",
+                               "Sequence type", "Family", "Virus name", "Coordinate resolution",
+                               "Lat", "Long", "Accession Number", "Method", "Note", "Date sampled", "Sample location"),
+                  class = 'custom-datatable',
+                  rownames = FALSE,
+                  escape = FALSE)
+    })
+    
+    output$download_seq_data <- downloadHandler(
+        filename = function() {
+            paste("filtered_seq_data_and_citations_", Sys.Date(), ".zip", sep = "")
+        },
+        content = function(file) {
+            # Create a temporary directory to store files
+            temp_dir <- tempdir()
+            
+            # Filtered table
+            write.csv(seq_data_filtered_rev(), file.path(temp_dir, "filtered_seq_data.csv"))
+            
+            # Filtered citations
+            selected_study_ids <- unique(seq_data_filtered_rev()$study_id)
+            filtered_citations <- filterCitations(selected_study_ids)
+            bib_path <- file.path(temp_dir, "filtered_seq_citations.bib")
+            createBibTeXFile(filtered_citations, bib_path)
+            
+            # Create a zip file with both CSV and BibTeX files
+            zip(file, files = c(file.path(temp_dir, "filtered_seq_data.csv"), bib_path), flags = "-j")
+        }
+    )    
+
+# Plot sequence records ---------------------------------------------------
+    
+    # Initialize an empty map
+    output$sequence_map <- renderLeaflet({
+        leaflet() %>%
+            addTiles()
+    })
+    
+    colour_palette <- c("darkgreen", "darkred")
+    
+    # ReactiveVal to track filter status
+    filter_applied <- reactiveVal(FALSE)
+    
+    # Update the map based on filtered data
+    observe({
+        filtered_data <- seq_data_filtered_rev()
+        
+        # Check if there are filters applied
+        if ((!is.null(input$seq_pathogen_family_rev) && length(input$seq_pathogen_family_rev) > 0) ||
+            (!is.null(input$seq_pathogen_species_rev) && length(input$seq_pathogen_species_rev) > 0) ||
+            (!is.null(input$seq_host_genus_rev) && length(input$seq_host_genus_rev) > 0) ||
+            (!is.null(input$seq_host_species_rev) && length(input$seq_host_species_rev) > 0)) {
+            
+            # Filter the data based on selected filters
+            filtered_data <- filtered_data %>%
+                filter(
+                    if (!is.null(input$seq_pathogen_family_rev)) family %in% input$seq_pathogen_family_rev else TRUE,
+                    if (!is.null(input$seq_pathogen_species_rev)) virus_clean %in% input$seq_pathogen_species_rev else TRUE,
+                    if (!is.null(input$seq_host_genus_rev)) host_genus %in% input$seq_host_genus_rev else TRUE,
+                    if (!is.null(input$seq_host_species_rev)) associatedTaxa %in% input$seq_host_species_rev else TRUE
+                )
+            
+            # Check if any records are left after filtering
+            if (nrow(filtered_data) > 0) {
+                # Map organismQuantity to colour
+                colours <- ifelse(filtered_data$sequenceType == "Pathogen", "darkred", "darkgreen")
+                
+                # Clear existing markers and add new ones
+                leafletProxy("sequence_map") %>%
+                    clearMarkers() %>%
+                    addCircleMarkers(data = filtered_data,
+                                     lng = ~decimalLongitude,
+                                     lat = ~decimalLatitude,
+                                     radius = 8,
+                                     color = colours,
+                                     fillOpacity = 0.7,
+                                     popup = ~paste("Study ID: ", study_id, "<br>",
+                                                    "Sequence ID: ", sequence_record_id, "<br>",
+                                                    "Rodent ID: ", associated_rodent_record_id, "<br>",
+                                                    "Pathogen ID: ", associated_pathogen_record_id, "<br>",
+                                                    "Accession number: ", accession_number, "<br>",
+                                                    "Sequence type: ", sequenceType, "<br>",
+                                                    "Rodent: ", associatedTaxa, "<br>",
+                                                    "Pathogen: ", virus_clean, "<br>",
+                                                    "Coordinate resolution: ", coordinate_resolution, "<br>",
+                                                    "Sample date: ", eventDate, "<br>"),
+                                     clusterOptions = markerClusterOptions(
+                                         spiderfyDistanceMultiplier = 2
+                                     )) %>%
+                    fitBounds(
+                        lat1 = min(filtered_data$decimalLatitude, na.rm = TRUE),
+                        lng1 = min(filtered_data$decimalLongitude, na.rm = TRUE),
+                        lat2 = max(filtered_data$decimalLatitude, na.rm = TRUE),
+                        lng2 = max(filtered_data$decimalLongitude, na.rm = TRUE)
+                    )
+                
+                # Update filter status
+                filter_applied(TRUE)
+            } else {
+                # If no records match the filters, clear markers
+                leafletProxy("sequence_map") %>%
+                    clearMarkers()
+                
+                # Update filter status
+                filter_applied(FALSE)
+            }
+        } else {
+            # If no filters applied, clear markers
+            leafletProxy("sequence_map") %>%
+                clearMarkers()
+            
+            # Update filter status
+            filter_applied(FALSE)
+        }
+    })
+    
+    
+    # Clear markers when filter is removed
+    observe({
+        if (!filter_applied()) {
+            leafletProxy("sequence_map") %>%
                 clearMarkers()
         }
     })
