@@ -50,7 +50,10 @@ clover_data <- read_rds(here("www", "clover_data.rds")) %>%
 update_data = FALSE
 
 if(update_data) {
-    review_data <- readRDS(gzcon(url("https://github.com/DidDrog11/arenavirus_hantavirus/raw/main/data/clean_data/2024-03-22_data.rds")))
+    review_data <- readRDS(gzcon(url("https://github.com/DidDrog11/arenavirus_hantavirus/raw/main/data/clean_data/2024-10-04_data.rds")))
+    
+    names(review_data$pathogen)[names(review_data$pathogen) == "virus_clean"] <- "scientificName"
+    names(review_data$pathogen)[names(review_data$pathogen) == "n_positive"] <- "occurrenceRemarks"
     
     write_rds(review_data, here("www", "review_data.rds"))
     
@@ -224,9 +227,9 @@ ui <- dashboardPage(
                             p("Following a systematic search of the available literature and review for suitability of inclusion, we have identified ", strong(paste(nrow(review_data$citations %>% filter(!str_detect(decision, "Exclude"))))),
                               " studies for review of full texts and data extraction."),
                             p("As of 2024-01-30 data have been extracted from ", 
-                              strong(paste(nrow(review_data$studies %>% filter(!is.na(study_id))))),
-                              paste0("(", round(nrow(review_data$studies %>% filter(!is.na(study_id)))/nrow(review_data$citations %>% filter(str_detect(decision, "Include"))) * 100, 0), "%)"),
-                              " studies.",  "This equates to ", paste0(round(nrow(review_data$studies %>% filter(!is.na(study_id)))/nrow(review_data$citations %>% filter(str_detect(processed, "y"))) * 100, 0), "%"), "of studies selected for full-text review (that have been reviewed), having data that meets inclusion and exclusion criteria."),
+                              strong(paste(nrow(review_data$citations %>% filter(!is.na(study_id))))),
+                              paste0("(", round(nrow(review_data$citations %>% filter(!is.na(study_id)))/nrow(review_data$citations %>% filter(str_detect(decision, "Include"))) * 100, 0), "%)"),
+                              " studies.",  "This equates to ", paste0(round(nrow(review_data$citations %>% filter(!is.na(study_id)))/nrow(review_data$citations %>% filter(str_detect(processed, "y"))) * 100, 0), "%"), "of studies selected for full-text review (that have been reviewed), having data that meets inclusion and exclusion criteria."),
                             plotOutput("review_status")),
                         
                         box(width = 12,
@@ -264,11 +267,11 @@ ui <- dashboardPage(
                             p("This map and the associated tables contain the same information as the previous page. Here, data may be filtered based on the rodent species or pathogen species with the filtered subset mapped.",
                               HTML(paste("<ul>
                                          <li>The dataset contains", nrow(review_data$host), "rodent records.</li>
-                                         <li>These include data on", length(unique(review_data$host$scientificName)), "rodent species.</li>
+                                         <li>These include data on", length(unique(review_data$host$species)), "rodent species.</li>
                                          <li>There are data on", length(unique(review_data$pathogen$scientificName)), "pathogen species.</li>
                                          <li>There are data on", nrow(review_data$pathogen %>%
                                              filter(occurrenceRemarks >= 1) %>%
-                                             distinct(associatedTaxa, scientificName)), "host-pathogen associations (including negative associations).</li>
+                                             distinct(host_species, scientificName)), "host-pathogen associations (including negative associations).</li>
                                          </ul>")))),
                         
                         box(width = 12,
@@ -340,7 +343,8 @@ server <- function(input, output) {
     })
     
 
-# Known pathogens ---------------------------------------------------------
+
+    # Known pathogens ---------------------------------------------------------
     
     # Render a datatable of the clover dataframe that is stored in the www folder and loaded in as clover_data
     output$clover_data <- renderDT(
@@ -506,14 +510,10 @@ server <- function(input, output) {
             nrow()
         
         extracted_full_text <- review_data$citations %>%
-            filter(str_detect(decision, "Include")) %>%
-            filter(str_detect(processed, "y")) %>%
+            filter(!is.na(study_id)) %>%
             nrow() 
         
-        awaiting_review <- review_data$citations %>%
-            filter(!str_detect(decision, "Exclude")) %>%
-            filter(is.na(processed)) %>%
-            nrow()
+        awaiting_review <- all_studies - excluded_full_text - extracted_full_text
         
         tibble(status = c("Extracted", "Awaiting review", "Excluded full text"),
                n_studies = c(extracted_full_text, awaiting_review, excluded_full_text)) %>%
@@ -542,12 +542,14 @@ server <- function(input, output) {
             mutate(DOI = paste0("<a href='https://doi.org/", gsub("#", "%23", DOI), "'>", DOI, "</a>")) %>%
             select(full_text_id, DOI, journal = `Publication Title`)
         
-        review_data$studies %>%
-            select(study_id, full_text_id, identifiedBy, datasetName, publication_year) %>%
+        review_data$citations %>%
+            filter(!is.na(study_id)) %>%
+            select(study_id, full_text_id, Author, Title, `Publication Year`) %>%
+            mutate(Author = str_split(Author, ";", simplify = TRUE)[, 1]) %>%
             left_join(doi_links, by = c("full_text_id")) %>%
             select("Study ID" = study_id, 
-                   "First author" = identifiedBy, "Year" = publication_year,
-                   "Title" = datasetName, "Journal" = journal, DOI) %>%
+                   "First author" = Author, "Year" = `Publication Year`,
+                   Title, "Journal" = journal, DOI) %>%
             datatable(escape = FALSE, rownames = FALSE)
         
         
@@ -555,8 +557,8 @@ server <- function(input, output) {
     
     output$included_studies_timeline <- renderPlot({
         
-        search_results_plot <- citations %>%
-            mutate(year = as.numeric(YEAR)) %>%
+        search_results_plot <- review_data$citations %>%
+            mutate(year = as.numeric(`Publication Year`)) %>%
             group_by(year) %>%
             summarise(n = n()) %>%
             ggplot() +
@@ -567,8 +569,9 @@ server <- function(input, output) {
             guides(fill = "none") +
             theme_bw()
         
-        included_studies_plot <- review_data$studies %>%
+        included_studies_plot <- review_data$citations %>%
             drop_na(study_id) %>%
+            mutate(publication_year = as.numeric(`Publication Year`)) %>%
             drop_na(publication_year) %>%
             group_by(publication_year) %>%
             summarise(n = n()) %>%
@@ -602,15 +605,19 @@ server <- function(input, output) {
             mutate(low_resolution = case_when(is.na(locality) ~ TRUE,
                                               coordinate_resolution == "country" ~ TRUE,
                                               coordinate_resolution == "state" ~ TRUE,
+                                              coordinate_resolution == "region" ~ TRUE,
+                                              coordinate_resolution == "province" ~ TRUE,
                                               coordinate_resolution == "district" ~ TRUE,
+                                              coordinate_resolution == "county region" ~ TRUE,
                                               coordinate_resolution == "county" ~ TRUE,
+                                              coordinate_resolution == "municipality" ~ TRUE,
                                               TRUE ~ FALSE)) %>%
             drop_na(decimalLatitude) %>%
             drop_na(decimalLongitude) %>%
-            left_join(review_data$studies %>%
-                          select(study_id, full_text_id, identifiedBy, datasetName), by = c("study_id")) %>%
             left_join(review_data$citations %>%
-                          select(full_text_id, `Publication Year`, DOI), by = "full_text_id") %>%
+                          drop_na(study_id) %>%
+                          mutate(Author = str_split(Author, ";", simplify = TRUE)[, 1]) %>%
+                          select(study_id, full_text_id, identifiedBy = Author, datasetName = Title, `Publication Year`, DOI), by = "study_id") %>%
             st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = "EPSG:4326")
         
         res_color_palette <- c("darkred", "darkgreen")
@@ -723,11 +730,11 @@ server <- function(input, output) {
         if (!is.null(input$host_genus_rev)) {
             sort(data_rev() %>%
                 filter(host_genus %in% input$host_genus_rev) %>%
-                distinct(associatedTaxa) %>%
+                distinct(host) %>%
                 pull())
         } else {
             sort(data_rev() %>%
-                distinct(associatedTaxa) %>%
+                distinct(host) %>%
                 pull())
         }
         
@@ -754,7 +761,7 @@ server <- function(input, output) {
         
         # Filter based on host species
         if (!is.null(input$host_species_rev)) {
-            filtered_data <- filter(filtered_data, associatedTaxa %in% input$host_species_rev)
+            filtered_data <- filter(filtered_data, host %in% input$host_species_rev)
         }
         
         return(filtered_data)
@@ -762,9 +769,9 @@ server <- function(input, output) {
     
     output$review_table_subset <- renderDataTable({
         datatable(data_filtered_rev(), options = list(scrollX = TRUE, autoWidth = TRUE),
-                  colnames = c("Path ID", "Rodent ID", "Study ID", "Host genus", "Host species", "Locality", "Country", "Coord Resolution",
-                               "Lat", "Long", "Pathogen rank", "Path family", "Path species", "Assay", "Tested", "Negative", "Positive",
-                               "Inconclusive", "Note"),
+                  # colnames = c("Path ID", "Rodent ID", "Study ID", "Host genus", "Host species", "Locality", "Country", "Coord Resolution",
+                  #              "Lat", "Long", "Pathogen rank", "Path family", "Path species", "Assay", "Tested", "Negative", "Positive",
+                  #              "Inconclusive", "Note"),
                   class = 'custom-datatable',
                   rownames = FALSE)
     })
@@ -863,7 +870,7 @@ server <- function(input, output) {
             # Check if any records are left after filtering
             if (nrow(filtered_data) > 0) {
                 # Map organismQuantity to colour
-                colours <- ifelse(filtered_data$organismQuantity >= 1, "darkred", "darkgreen")
+                colours <- ifelse(filtered_data$n_positive >= 1, "darkred", "darkgreen")
                 
                 # Clear existing markers and add new ones
                 leafletProxy("pathogen_map") %>%
@@ -876,11 +883,11 @@ server <- function(input, output) {
                                      fillOpacity = 0.7,
                                      popup = ~paste("Study ID: ", study_id, "<br>",
                                                     "Rodent ID: ", associated_rodent_record_id, "<br>",
-                                                    "Rodent: ", associatedTaxa, "<br>",
-                                                    "N rodents tested: ", occurrenceRemarks, "<br>",
+                                                    "Rodent: ", host, "<br>",
+                                                    "N rodents tested: ", n_tested, "<br>",
                                                     "Pathogen ID: ", pathogen_record_id, "<br>",
                                                     "Pathogen: ", scientificName, "<br>",
-                                                    "N pathogen detected: ", organismQuantity),
+                                                    "N pathogen detected: ", n_positive),
                                      clusterOptions = markerClusterOptions(
                                          spiderfyDistanceMultiplier = 2
                                      )) %>%
@@ -924,7 +931,7 @@ server <- function(input, output) {
 
 # Stratify sequence records -----------------------------------------------
 
-    seq_data_rev <- reactiveVal(review_data$sequence_data %>%
+    seq_data_rev <- reactiveVal(review_data$sequences %>%
                                     mutate(accession_number = sprintf('<a href="https://www.ncbi.nlm.nih.gov/search/all/?term=%s" target="_blank">%s</a>',
                                                                       accession_number,
                                                                       accession_number)))
@@ -978,7 +985,7 @@ server <- function(input, output) {
     
     # Get available categories
     seq_var_pathogen_family_rev <- reactive({
-        sort(unique(review_data$sequence_data$family))
+        sort(unique(review_data$sequences$family))
     })
     
     seq_var_pathogen_species_rev <- reactive({
@@ -997,7 +1004,7 @@ server <- function(input, output) {
     })
     
     seq_var_host_genus_rev <- reactive({
-        sort(unique(review_data$sequence_data$host_genus))
+        sort(unique(review_data$sequences$host_genus))
     })
     
     seq_var_host_species_rev <- reactive({
@@ -1005,11 +1012,11 @@ server <- function(input, output) {
         if (!is.null(input$host_genus_rev)) {
             sort(seq_data_rev() %>%
                      filter(host_genus %in% input$seq_host_genus_rev) %>%
-                     distinct(associatedTaxa) %>%
+                     distinct(species) %>%
                      pull())
         } else {
             sort(seq_data_rev() %>%
-                     distinct(associatedTaxa) %>%
+                     distinct(species) %>%
                      pull())
         }
         
@@ -1036,7 +1043,7 @@ server <- function(input, output) {
         
         # Filter based on host species
         if (!is.null(input$seq_host_species_rev)) {
-            seq_filtered_data <- filter(seq_filtered_data, associatedTaxa %in% input$seq_host_species_rev)
+            seq_filtered_data <- filter(seq_filtered_data, species %in% input$seq_host_species_rev)
         }
         
         return(seq_filtered_data)
@@ -1044,9 +1051,9 @@ server <- function(input, output) {
     
     output$seq_review_table_subset <- renderDataTable({
         datatable(seq_data_filtered_rev(), options = list(scrollX = TRUE, autoWidth = TRUE),
-                  colnames = c("Sequence ID", "Rodent ID", "Path ID", "Sampling date", "Study ID", "Host genus", "Host species",
-                               "Sequence type", "Family", "Virus name", "Coordinate resolution",
-                               "Lat", "Long", "Accession Number", "Method", "Note", "Date sampled", "Sample location"),
+                  # colnames = c("Sequence ID", "Rodent ID", "Path ID", "Sampling date", "Study ID", "Host genus", "Host species",
+                  #              "Sequence type", "Family", "Virus name", "Coordinate resolution",
+                  #              "Lat", "Long", "Accession Number", "Method", "Note", "Date sampled", "Sample location"),
                   class = 'custom-datatable',
                   rownames = FALSE,
                   escape = FALSE)
@@ -1126,7 +1133,7 @@ server <- function(input, output) {
                                                     "Pathogen ID: ", associated_pathogen_record_id, "<br>",
                                                     "Accession number: ", accession_number, "<br>",
                                                     "Sequence type: ", sequenceType, "<br>",
-                                                    "Rodent: ", associatedTaxa, "<br>",
+                                                    "Rodent: ", species, "<br>",
                                                     "Pathogen: ", virus_clean, "<br>",
                                                     "Coordinate resolution: ", coordinate_resolution, "<br>",
                                                     "Sample date: ", eventDate, "<br>"),
